@@ -1,0 +1,69 @@
+name: Compilar Registros iOS
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["main", "master"]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Preparar Registros
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/registros-source"
+          package="$(find "$GITHUB_WORKSPACE" -iname 'Registros-iOS*.zip' -not -path '*/.git/*' | head -n 1)"
+          if [ -n "$package" ]; then
+            unzip -q "$package" -d "$RUNNER_TEMP/registros-source"
+            spec="$(find "$RUNNER_TEMP/registros-source" -name project.yml | head -n 1)"
+          else
+            spec="$(find "$GITHUB_WORKSPACE" -path '*/Registros-iOS/project.yml' -not -path '*/.git/*' | head -n 1)"
+          fi
+          if [ -z "$spec" ]; then
+            echo "Sube Registros-iOS.zip a la raíz del repositorio."
+            exit 1
+          fi
+          echo "PROJECT_DIR=$(dirname "$spec")" >> "$GITHUB_ENV"
+
+      - name: Instalar XcodeGen
+        run: brew list xcodegen >/dev/null 2>&1 || brew install xcodegen
+
+      - name: Generar proyecto
+        run: |
+          cd "$PROJECT_DIR"
+          xcodegen generate
+
+      - name: Compilar Registros
+        run: |
+          cd "$PROJECT_DIR"
+          set -o pipefail
+          xcodebuild             -project Registros.xcodeproj             -scheme Registros             -configuration Release             -sdk iphoneos             -destination 'generic/platform=iOS'             -archivePath "$RUNNER_TEMP/Registros.xcarchive"             CODE_SIGNING_ALLOWED=NO             archive | tee "$RUNNER_TEMP/build.log"
+
+      - name: Empaquetar IPA
+        run: |
+          mkdir -p "$RUNNER_TEMP/export/Payload"
+          cp -R "$RUNNER_TEMP/Registros.xcarchive/Products/Applications/Registros.app" "$RUNNER_TEMP/export/Payload/"
+          cd "$RUNNER_TEMP/export"
+          zip -qr "$RUNNER_TEMP/Registros.ipa" Payload
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Registros-iOS
+          path: ${{ runner.temp }}/Registros.ipa
+          if-no-files-found: error
+
+      - name: Registro de compilación
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Registros-build-log
+          path: ${{ runner.temp }}/build.log
+          if-no-files-found: ignore
